@@ -875,6 +875,10 @@ def register_lakeflow_source(spark):
             Args:
                 options: Connection options including authentication credentials
             """
+            # DEBUG: Log received options to diagnose connection credential issues
+            print(f"DEBUG LakeflowConnect: Received options keys: {list(options.keys())}")
+            print(f"DEBUG LakeflowConnect: Full options: {options}")
+
             self.options = options
 
             # Authentication options
