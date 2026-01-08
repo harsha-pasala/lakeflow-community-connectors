@@ -695,22 +695,14 @@ class LakeflowConnect:
         Args:
             options: Connection options including authentication credentials
         """
-        # DEBUG: Log received options to diagnose connection credential issues
-        print(f"DEBUG LakeflowConnect: Received options keys: {list(options.keys())}")
-        print(f"DEBUG LakeflowConnect: Full options: {options}")
-        
         # Helper function to get option with case-insensitive fallback
         def get_option(key: str, default: str = None) -> Optional[str]:
             """Get option value, checking both original case and lowercase."""
             value = options.get(key)
             if value is not None:
                 return value
-            # Try lowercase version
-            value = options.get(key.lower())
-            if value is not None:
-                print(f"DEBUG: Found '{key}' as lowercase '{key.lower()}'")
-                return value
-            return default
+            # Try lowercase version (Databricks may lowercase option keys)
+            return options.get(key.lower(), default)
         
         self.options = options
 
@@ -719,12 +711,6 @@ class LakeflowConnect:
         self.client_secret = get_option("clientSecret")
         self.username = get_option("username")
         self.password = get_option("password")
-        
-        # DEBUG: Show what we found
-        print(f"DEBUG: clientId found = {self.client_id is not None}")
-        print(f"DEBUG: clientSecret found = {self.client_secret is not None}")
-        print(f"DEBUG: username found = {self.username is not None}")
-        print(f"DEBUG: password found = {self.password is not None}")
 
         # Connection options (case-insensitive lookup)
         self.login_url = get_option("loginUrl", "https://login.salesforce.com")
