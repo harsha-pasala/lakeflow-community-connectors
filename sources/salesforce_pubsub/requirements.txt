@@ -1,0 +1,22 @@
+# Salesforce Pub/Sub Connector Dependencies
+
+# gRPC for Pub/Sub API communication
+grpcio>=1.50.0
+
+# Protocol Buffers
+protobuf>=4.21.0
+
+# Avro for event serialization
+avro-python3>=1.10.0
+
+# Bitstring for bitmap processing
+bitstring>=4.0.0
+
+# SSL certificates
+certifi>=2022.0.0
+
+# HTTP requests for OAuth
+requests>=2.28.0
+
+# PySpark (usually provided by runtime)
+# pyspark>=3.4.0

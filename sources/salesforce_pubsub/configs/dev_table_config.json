@@ -1,0 +1,30 @@
+{
+    "account_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "contact_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "lead_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "opportunity_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "case_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "task_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    },
+    "event_change_event": {
+        "replayPreset": "EARLIEST",
+        "pollTimeoutSeconds": "10"
+    }
+}
