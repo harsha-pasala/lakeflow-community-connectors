@@ -27,7 +27,6 @@ from avro.schema import Schema
 from bitstring import BitArray
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
-from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
 from pyspark.sql.types import (
@@ -42,15 +41,6 @@ from pyspark.sql.types import (
 # =============================================================================
 # PROTOBUF DEFINITIONS (from pubsub_api.proto)
 # =============================================================================
-
-_runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    6,
-    31,
-    0,
-    '',
-    'pubsub_api.proto'
-)
 
 _sym_db = _symbol_database.Default()
 
