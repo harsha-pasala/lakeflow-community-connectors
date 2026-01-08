@@ -795,15 +795,19 @@ def register_lakeflow_source(spark):
         Returns:
             Configured and authenticated client
         """
-        grpc_host = options.get('grpcHost', 'api.pubsub.salesforce.com')
-        grpc_port = int(options.get('grpcPort', 7443))
-        login_url = options.get('loginUrl', 'https://login.salesforce.com')
+        # Helper for case-insensitive option lookup
+        def get_opt(key: str, default=None):
+            return options.get(key) or options.get(key.lower()) or default
+
+        grpc_host = get_opt('grpcHost', 'api.pubsub.salesforce.com')
+        grpc_port = int(get_opt('grpcPort', 7443))
+        login_url = get_opt('loginUrl', 'https://login.salesforce.com')
 
         client = PubSubAPIClient(grpc_host=grpc_host, grpc_port=grpc_port)
 
         # Check for OAuth Client Credentials (preferred)
-        client_id = options.get('clientId')
-        client_secret = options.get('clientSecret')
+        client_id = get_opt('clientId')
+        client_secret = get_opt('clientSecret')
 
         if client_id and client_secret:
             if not client.authenticate_with_client_credentials(
@@ -815,8 +819,8 @@ def register_lakeflow_source(spark):
             return client
 
         # Fallback to password authentication (legacy)
-        username = options.get('username')
-        password = options.get('password')
+        username = get_opt('username')
+        password = get_opt('password')
 
         if username and password:
             if not client.authenticate(username=username, password=password, login_url=login_url):
@@ -879,18 +883,37 @@ def register_lakeflow_source(spark):
             print(f"DEBUG LakeflowConnect: Received options keys: {list(options.keys())}")
             print(f"DEBUG LakeflowConnect: Full options: {options}")
 
+            # Helper function to get option with case-insensitive fallback
+            def get_option(key: str, default: str = None) -> Optional[str]:
+                """Get option value, checking both original case and lowercase."""
+                value = options.get(key)
+                if value is not None:
+                    return value
+                # Try lowercase version
+                value = options.get(key.lower())
+                if value is not None:
+                    print(f"DEBUG: Found '{key}' as lowercase '{key.lower()}'")
+                    return value
+                return default
+
             self.options = options
 
-            # Authentication options
-            self.client_id = options.get("clientId")
-            self.client_secret = options.get("clientSecret")
-            self.username = options.get("username")
-            self.password = options.get("password")
+            # Authentication options (case-insensitive lookup)
+            self.client_id = get_option("clientId")
+            self.client_secret = get_option("clientSecret")
+            self.username = get_option("username")
+            self.password = get_option("password")
 
-            # Connection options
-            self.login_url = options.get("loginUrl", "https://login.salesforce.com")
-            self.grpc_host = options.get("grpcHost", "api.pubsub.salesforce.com")
-            self.grpc_port = int(options.get("grpcPort", "7443"))
+            # DEBUG: Show what we found
+            print(f"DEBUG: clientId found = {self.client_id is not None}")
+            print(f"DEBUG: clientSecret found = {self.client_secret is not None}")
+            print(f"DEBUG: username found = {self.username is not None}")
+            print(f"DEBUG: password found = {self.password is not None}")
+
+            # Connection options (case-insensitive lookup)
+            self.login_url = get_option("loginUrl", "https://login.salesforce.com")
+            self.grpc_host = get_option("grpcHost", "api.pubsub.salesforce.com")
+            self.grpc_port = int(get_option("grpcPort", "7443"))
 
             # Streaming options
             self.poll_timeout_seconds = int(options.get("pollTimeoutSeconds", "10"))
