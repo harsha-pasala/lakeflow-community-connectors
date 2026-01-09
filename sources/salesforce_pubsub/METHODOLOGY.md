@@ -17,7 +17,8 @@ This document explains the architecture and implementation of the Salesforce Pub
 9. [CDC Bitmap Processing](#cdc-bitmap-processing)
 10. [Offset Management & Checkpointing](#offset-management--checkpointing)
 11. [Integration with Lakeflow Connect](#integration-with-lakeflow-connect)
-12. [Key Design Decisions](#key-design-decisions)
+12. [Deploying the Pipeline](#deploying-the-pipeline)
+13. [Key Design Decisions](#key-design-decisions)
 
 ---
 
@@ -30,6 +31,16 @@ The Salesforce Pub/Sub connector enables real-time streaming of Salesforce event
 | **Change Data Capture (CDC)** | Real-time changes to Salesforce objects (creates, updates, deletes, undeletes) | `/data/{Object}ChangeEvent` |
 | **Platform Events** | Custom event messages published by Salesforce applications | `/event/{EventName}__e` |
 | **Custom Events** | User-defined event schemas for application-specific needs | `/event/{CustomEvent}__e` |
+
+### Unified Change Events Topic
+
+Salesforce provides a special topic `/data/ChangeEvents` that streams changes from **all CDC-enabled standard and custom objects** in a single subscription. This is useful for:
+
+- **Centralized ingestion**: Capture all Salesforce changes through a single streaming table, then fan out to object-specific tables downstream
+- **Simplified architecture**: Reduce the number of subscriptions and streaming jobs needed
+- **Discovery**: Monitor all changes across the org without pre-configuring individual object topics
+
+When using `/data/ChangeEvents`, the `ChangeEventHeader.entityName` field in each event identifies the source object (e.g., `Account`, `Contact`, `Lead`), allowing downstream processing to route events appropriately.
 
 The connector is a **single-file, self-contained implementation** that bundles all required components—including protobuf definitions, gRPC stubs, and utility functions—to simplify deployment in distributed Spark environments.
 
@@ -499,6 +510,128 @@ Topics are converted to snake_case table names:
 | `/data/AccountChangeEvent` | `account_change_event` |
 | `/data/ContactChangeEvent` | `contact_change_event` |
 | `/event/MyPlatformEvent__e` | `my_platform_event` |
+
+---
+
+## Deploying the Pipeline
+
+This section walks through deploying the Salesforce Pub/Sub connector as a Lakeflow Community Connector pipeline on Databricks.
+
+### Prerequisites
+
+The community connector requires specific Python packages to be installed in the pipeline environment. In your Databricks pipeline settings, navigate to the **Environment** tab under serverless compute and add these packages as dependencies:
+
+```
+grpcio>=1.50.0
+protobuf>=4.21.0
+avro-python3>=1.10.0
+bitstring>=4.0.0
+certifi>=2022.0.0
+requests>=2.28.0
+```
+
+### Step 1: Create a Unity Catalog Connection
+
+Create a Community Connector connection in Unity Catalog for Salesforce with your chosen authentication mechanism:
+
+**For OAuth 2.0 Client Credentials:**
+- `clientId`: Your Connected App Consumer Key
+- `clientSecret`: Your Connected App Consumer Secret
+- `loginUrl`: Salesforce login URL (e.g., `https://login.salesforce.com` for production or `https://test.salesforce.com` for sandbox)
+
+**For Password Authentication (Legacy):**
+- `username`: Your Salesforce username
+- `password`: Your Salesforce password + security token
+- `loginUrl`: Salesforce login URL
+
+### Step 2: Deploy the Connector
+
+Deploy the connector from this repository using the Lakeflow Community Connector CLI:
+
+```bash
+# Use salesforce_pubsub as the source name
+databricks labs community-connector deploy --source salesforce_pubsub
+```
+
+### Step 3: Create the Ingestion Pipeline
+
+Create an ingestion pipeline definition file (e.g., `ingest.py`) that defines streaming tables for each Salesforce topic you want to capture:
+
+```python
+import dlt
+from dlt import read_stream
+
+# Stream Account changes
+@dlt.table(name="account_change_event")
+def account_changes():
+    return read_stream(
+        "lakeflow_connect",
+        connection="salesforce_pubsub_connection",
+        table_options={"topic": "/data/AccountChangeEvent"}
+    )
+
+# Stream Contact changes
+@dlt.table(name="contact_change_event")
+def contact_changes():
+    return read_stream(
+        "lakeflow_connect",
+        connection="salesforce_pubsub_connection",
+        table_options={"topic": "/data/ContactChangeEvent"}
+    )
+
+# Stream Lead changes
+@dlt.table(name="lead_change_event")
+def lead_changes():
+    return read_stream(
+        "lakeflow_connect",
+        connection="salesforce_pubsub_connection",
+        table_options={"topic": "/data/LeadChangeEvent"}
+    )
+
+# Stream Opportunity changes
+@dlt.table(name="opportunity_change_event")
+def opportunity_changes():
+    return read_stream(
+        "lakeflow_connect",
+        connection="salesforce_pubsub_connection",
+        table_options={"topic": "/data/OpportunityChangeEvent"}
+    )
+```
+
+### Alternative: Unified Change Events Ingestion
+
+For a centralized approach, use the `/data/ChangeEvents` topic to capture all changes in a single table, then fan out downstream:
+
+```python
+import dlt
+from dlt import read_stream
+
+# Stream ALL Salesforce CDC changes into a single table
+@dlt.table(name="all_salesforce_changes")
+def all_changes():
+    return read_stream(
+        "lakeflow_connect",
+        connection="salesforce_pubsub_connection",
+        table_options={"topic": "/data/ChangeEvents"}
+    )
+
+# Fan out to object-specific tables using downstream views or tables
+@dlt.table(name="account_changes_derived")
+def account_changes_derived():
+    return dlt.read("all_salesforce_changes").filter(
+        "get_json_object(decoded_event, '$.ChangeEventHeader.entityName') = 'Account'"
+    )
+```
+
+### Step 4: Configure and Run the Pipeline
+
+1. Create a new Delta Live Tables pipeline in Databricks
+2. Point it to your `ingest.py` file
+3. Ensure the Python dependencies are configured in the Environment tab
+4. Set the pipeline to **Continuous** mode for real-time streaming
+5. Start the pipeline
+
+Events will begin flowing from Salesforce to your Delta tables with sub-5-second latency.
 
 ---
 
