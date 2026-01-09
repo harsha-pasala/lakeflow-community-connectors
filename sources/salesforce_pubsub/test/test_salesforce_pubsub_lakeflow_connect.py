@@ -1,14 +1,16 @@
 """
 Tests for Salesforce Pub/Sub Lakeflow Connector
 
-This module contains unit tests for the Salesforce Pub/Sub connector.
-Note: Full integration tests require valid Salesforce credentials.
+This module contains both:
+1. Unit tests that run without Salesforce credentials
+2. Integration tests using the LakeflowConnectTester suite (requires credentials)
 """
 
 import json
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Add parent directories to path for imports
@@ -16,11 +18,19 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 )
 
+from tests import test_suite
+from tests.test_suite import LakeflowConnectTester
+from tests.test_utils import load_config
 from sources.salesforce_pubsub.salesforce_pubsub import LakeflowConnect
 
 
-class TestSalesforcePubSubConnector(unittest.TestCase):
-    """Unit tests for SalesforcePubSubConnector."""
+# =============================================================================
+# UNIT TESTS (no credentials required)
+# =============================================================================
+
+
+class TestSalesforcePubSubConnectorUnit(unittest.TestCase):
+    """Unit tests for SalesforcePubSubConnector that don't require credentials."""
 
     def test_init_with_oauth_credentials_no_topic(self):
         """Test initialization with OAuth credentials but no topic (valid)."""
@@ -89,6 +99,19 @@ class TestSalesforcePubSubConnector(unittest.TestCase):
         self.assertEqual(connector.poll_timeout_seconds, 30)
         self.assertEqual(connector.max_events_per_batch, 500)
 
+    def test_init_with_lowercase_options(self):
+        """Test initialization with lowercase option keys (Databricks compatibility)."""
+        options = {
+            "clientid": "test-client-id",
+            "clientsecret": "test-client-secret",
+            "loginurl": "https://test.salesforce.com",
+        }
+        connector = LakeflowConnect(options)
+
+        self.assertEqual(connector.client_id, "test-client-id")
+        self.assertEqual(connector.client_secret, "test-client-secret")
+        self.assertEqual(connector.login_url, "https://test.salesforce.com")
+
     def test_list_tables_with_connection_topic(self):
         """Test list_tables returns table when topic is in connection."""
         options = {
@@ -114,16 +137,28 @@ class TestSalesforcePubSubConnector(unittest.TestCase):
 
         self.assertEqual(tables, [])
 
-    def test_topic_to_table_name_cdc_event(self):
-        """Test conversion of CDC topic to table name."""
+    def test_topic_to_table_name_cdc_events(self):
+        """Test conversion of various CDC topics to table names."""
         options = {
             "clientId": "test-client-id",
             "clientSecret": "test-client-secret",
         }
         connector = LakeflowConnect(options)
 
-        result = connector._topic_to_table_name("/data/AccountChangeEvent")
-        self.assertEqual(result, "account_change_event")
+        test_cases = [
+            ("/data/AccountChangeEvent", "account_change_event"),
+            ("/data/ContactChangeEvent", "contact_change_event"),
+            ("/data/LeadChangeEvent", "lead_change_event"),
+            ("/data/OpportunityChangeEvent", "opportunity_change_event"),
+            ("/data/CaseChangeEvent", "case_change_event"),
+            ("/data/TaskChangeEvent", "task_change_event"),
+            ("/data/EventChangeEvent", "event_change_event"),
+        ]
+
+        for topic, expected in test_cases:
+            with self.subTest(topic=topic):
+                result = connector._topic_to_table_name(topic)
+                self.assertEqual(result, expected)
 
     def test_topic_to_table_name_platform_event(self):
         """Test conversion of platform event topic to table name."""
@@ -193,13 +228,15 @@ class TestSalesforcePubSubConnector(unittest.TestCase):
         connector = LakeflowConnect(options)
 
         schema = connector.get_table_schema(
-            "account_change_event",
-            {"topic": "/data/AccountChangeEvent"}
+            "account_change_event", {"topic": "/data/AccountChangeEvent"}
         )
 
         field_names = [field.name for field in schema.fields]
         self.assertIn("replay_id", field_names)
         self.assertIn("event_payload", field_names)
+        self.assertIn("schema_id", field_names)
+        self.assertIn("topic_name", field_names)
+        self.assertIn("timestamp", field_names)
         self.assertIn("decoded_event", field_names)
 
     def test_get_table_schema_with_connection_topic(self):
@@ -253,8 +290,7 @@ class TestSalesforcePubSubConnector(unittest.TestCase):
         connector = LakeflowConnect(options)
 
         metadata = connector.read_table_metadata(
-            "account_change_event",
-            {"topic": "/data/AccountChangeEvent"}
+            "account_change_event", {"topic": "/data/AccountChangeEvent"}
         )
 
         self.assertEqual(metadata["primary_keys"], ["replay_id"])
@@ -275,6 +311,34 @@ class TestSalesforcePubSubConnector(unittest.TestCase):
 
         self.assertIn("does not match topic", str(context.exception))
 
+    def test_schema_field_types(self):
+        """Test that schema has correct field types."""
+        from pyspark.sql.types import StringType, BinaryType, LongType
+
+        options = {
+            "clientId": "test-client-id",
+            "clientSecret": "test-client-secret",
+            "topic": "/data/AccountChangeEvent",
+        }
+        connector = LakeflowConnect(options)
+
+        schema = connector.get_table_schema("account_change_event", {})
+
+        # Check specific field types
+        field_types = {field.name: type(field.dataType) for field in schema.fields}
+
+        self.assertEqual(field_types["replay_id"], StringType)
+        self.assertEqual(field_types["event_payload"], BinaryType)
+        self.assertEqual(field_types["schema_id"], StringType)
+        self.assertEqual(field_types["topic_name"], StringType)
+        self.assertEqual(field_types["timestamp"], LongType)
+        self.assertEqual(field_types["decoded_event"], StringType)
+
+
+# =============================================================================
+# INTEGRATION TESTS (requires Salesforce credentials)
+# =============================================================================
+
 
 class TestSalesforcePubSubConnectorIntegration(unittest.TestCase):
     """
@@ -292,11 +356,22 @@ class TestSalesforcePubSubConnectorIntegration(unittest.TestCase):
             "configs",
             "dev_config.json",
         )
+        table_config_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "configs",
+            "dev_table_config.json",
+        )
 
         cls.config = {}
+        cls.table_config = {}
+
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 cls.config = json.load(f)
+
+        if os.path.exists(table_config_path):
+            with open(table_config_path, "r") as f:
+                cls.table_config = json.load(f)
 
         # Check for required credentials
         cls.has_oauth = cls.config.get("clientId") and cls.config.get("clientSecret")
@@ -306,11 +381,10 @@ class TestSalesforcePubSubConnectorIntegration(unittest.TestCase):
     def setUp(self):
         """Skip if no credentials."""
         if not self.has_credentials:
-            self.skipTest("Salesforce credentials not configured")
+            self.skipTest("Salesforce credentials not configured in dev_config.json")
 
     def test_connection_without_topic(self):
         """Test connection to Salesforce without topic (auth only)."""
-        # Remove topic if present for this test
         config = {k: v for k, v in self.config.items() if k != "topic"}
         connector = LakeflowConnect(config)
         result = connector.test_connection()
@@ -332,7 +406,6 @@ class TestSalesforcePubSubConnectorIntegration(unittest.TestCase):
 
     def test_read_events_with_topic_in_table_options(self):
         """Test reading events with topic provided in table_options."""
-        # Create connector without topic in connection
         config = {k: v for k, v in self.config.items() if k != "topic"}
         connector = LakeflowConnect(config)
 
@@ -350,10 +423,96 @@ class TestSalesforcePubSubConnectorIntegration(unittest.TestCase):
         )
 
         events_list = list(events)
-        # We can't guarantee events exist, but the call should succeed
         self.assertIsInstance(events_list, list)
         self.assertIsInstance(offset, dict)
 
+    def test_multiple_topics(self):
+        """Test reading from multiple different topics."""
+        topics_to_test = [
+            "/data/AccountChangeEvent",
+            "/data/ContactChangeEvent",
+        ]
+
+        config = {k: v for k, v in self.config.items() if k != "topic"}
+
+        for topic in topics_to_test:
+            with self.subTest(topic=topic):
+                connector = LakeflowConnect(config)
+                table_name = connector._topic_to_table_name(topic)
+
+                # Test that we can get schema and metadata
+                schema = connector.get_table_schema(table_name, {"topic": topic})
+                self.assertIsNotNone(schema)
+
+                metadata = connector.read_table_metadata(table_name, {"topic": topic})
+                self.assertEqual(metadata["ingestion_type"], "append")
+
+
+def test_salesforce_pubsub_connector():
+    """
+    Test the Salesforce Pub/Sub connector using the shared LakeflowConnect test suite.
+
+    This function follows the GitHub connector pattern for running tests with
+    the LakeflowConnectTester framework.
+    """
+    # Inject the Salesforce PubSub LakeflowConnect class into the shared test_suite namespace
+    test_suite.LakeflowConnect = LakeflowConnect
+
+    # Load connection-level configuration
+    parent_dir = Path(__file__).parent.parent
+    config_path = parent_dir / "configs" / "dev_config.json"
+    table_config_path = parent_dir / "configs" / "dev_table_config.json"
+
+    config = load_config(config_path)
+    table_config = load_config(table_config_path)
+
+    # Check for credentials
+    has_oauth = config.get("clientId") and config.get("clientSecret")
+    has_password = config.get("username") and config.get("password")
+
+    if not has_oauth and not has_password:
+        print(
+            "Skipping LakeflowConnectTester: No Salesforce credentials configured"
+        )
+        print(
+            "Add clientId and clientSecret to configs/dev_config.json to run integration tests"
+        )
+        return
+
+    # Ensure topic is configured for list_tables to return results
+    if not config.get("topic"):
+        config["topic"] = "/data/AccountChangeEvent"
+
+    # Create tester with the config and per-table options
+    tester = LakeflowConnectTester(config, table_config)
+
+    # Run all standard LakeflowConnect tests for this connector
+    report = tester.run_all_tests()
+    tester.print_report(report, show_details=True)
+
+    # Assert that all tests passed
+    assert report.passed_tests == report.total_tests, (
+        f"Test suite had failures: {report.failed_tests} failed, "
+        f"{report.error_tests} errors"
+    )
+
 
 if __name__ == "__main__":
-    unittest.main()
+    # Run unit tests first
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+
+    # Add unit tests
+    suite.addTests(loader.loadTestsFromTestCase(TestSalesforcePubSubConnectorUnit))
+    suite.addTests(
+        loader.loadTestsFromTestCase(TestSalesforcePubSubConnectorIntegration)
+    )
+
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+
+    # Then run the LakeflowConnectTester if credentials are available
+    print("\n" + "=" * 60)
+    print("Running LakeflowConnectTester Suite")
+    print("=" * 60)
+    test_salesforce_pubsub_connector()
