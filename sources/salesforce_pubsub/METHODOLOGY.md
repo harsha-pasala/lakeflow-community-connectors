@@ -517,19 +517,6 @@ Topics are converted to snake_case table names:
 
 This section walks through deploying the Salesforce Pub/Sub connector as a Lakeflow Community Connector pipeline on Databricks.
 
-### Prerequisites
-
-The community connector requires specific Python packages to be installed in the pipeline environment. In your Databricks pipeline settings, navigate to the **Environment** tab under serverless compute and add these packages as dependencies:
-
-```
-grpcio>=1.50.0
-protobuf>=4.21.0
-avro-python3>=1.10.0
-bitstring>=4.0.0
-certifi>=2022.0.0
-requests>=2.28.0
-```
-
 ### Step 1: Create a Unity Catalog Connection
 
 Create a Community Connector connection in Unity Catalog for Salesforce with your chosen authentication mechanism:
@@ -546,90 +533,118 @@ Create a Community Connector connection in Unity Catalog for Salesforce with you
 
 ### Step 2: Deploy the Connector
 
-Deploy the connector from this repository using the Lakeflow Community Connector CLI:
+Deploy the connector from this repository using the Lakeflow Community Connector CLI. Use `salesforce_pubsub` as the source name:
 
 ```bash
-# Use salesforce_pubsub as the source name
 databricks labs community-connector deploy --source salesforce_pubsub
 ```
 
-### Step 3: Create the Ingestion Pipeline
+This will generate an `ingest.py` file that you'll customize in the next step.
 
-Create an ingestion pipeline definition file (e.g., `ingest.py`) that defines streaming tables for each Salesforce topic you want to capture:
+### Step 3: Configure the Pipeline Spec
 
-```python
-import dlt
-from dlt import read_stream
-
-# Stream Account changes
-@dlt.table(name="account_change_event")
-def account_changes():
-    return read_stream(
-        "lakeflow_connect",
-        connection="salesforce_pubsub_connection",
-        table_options={"topic": "/data/AccountChangeEvent"}
-    )
-
-# Stream Contact changes
-@dlt.table(name="contact_change_event")
-def contact_changes():
-    return read_stream(
-        "lakeflow_connect",
-        connection="salesforce_pubsub_connection",
-        table_options={"topic": "/data/ContactChangeEvent"}
-    )
-
-# Stream Lead changes
-@dlt.table(name="lead_change_event")
-def lead_changes():
-    return read_stream(
-        "lakeflow_connect",
-        connection="salesforce_pubsub_connection",
-        table_options={"topic": "/data/LeadChangeEvent"}
-    )
-
-# Stream Opportunity changes
-@dlt.table(name="opportunity_change_event")
-def opportunity_changes():
-    return read_stream(
-        "lakeflow_connect",
-        connection="salesforce_pubsub_connection",
-        table_options={"topic": "/data/OpportunityChangeEvent"}
-    )
-```
-
-### Alternative: Unified Change Events Ingestion
-
-For a centralized approach, use the `/data/ChangeEvents` topic to capture all changes in a single table, then fan out downstream:
+After deployment, edit the generated `ingest.py` file to define the tables you want to ingest. The `pipeline_spec` dictionary configures which Salesforce topics to stream and where to store them:
 
 ```python
-import dlt
-from dlt import read_stream
+pipeline_spec = {
+    "connection_name": "salesforce_pubsub_connection",
+    "objects": [
+        {
+            "table": {
+                "source_table": "account_change_event",
+                "destination_catalog": "my_catalog",
+                "destination_schema": "salesforce_pubsub",
+                "destination_table": "account_changes",
+                "table_configuration": {
+                    "scd_type": "APPEND_ONLY",
+                    "topic": "/data/AccountChangeEvent",
+                    "replayPreset": "EARLIEST"
+                }
+            }
+        },
+        {
+            "table": {
+                "source_table": "contact_change_event",
+                "destination_catalog": "my_catalog",
+                "destination_schema": "salesforce_pubsub",
+                "destination_table": "contact_changes",
+                "table_configuration": {
+                    "scd_type": "APPEND_ONLY",
+                    "topic": "/data/ContactChangeEvent",
+                    "replayPreset": "EARLIEST"
+                }
+            }
+        },
+        {
+            "table": {
+                "source_table": "opportunity_change_event",
+                "destination_catalog": "my_catalog",
+                "destination_schema": "salesforce_pubsub",
+                "destination_table": "opportunity_changes",
+                "table_configuration": {
+                    "scd_type": "APPEND_ONLY",
+                    "topic": "/data/OpportunityChangeEvent",
+                    "replayPreset": "EARLIEST"
+                }
+            }
+        },
+        {
+            "table": {
+                "source_table": "change_events",
+                "destination_catalog": "my_catalog",
+                "destination_schema": "salesforce_pubsub",
+                "destination_table": "change_events",
+                "table_configuration": {
+                    "scd_type": "APPEND_ONLY",
+                    "topic": "/data/ChangeEvents",
+                    "replayPreset": "EARLIEST"
+                }
+            }
+        }
+    ]
+}
 
-# Stream ALL Salesforce CDC changes into a single table
-@dlt.table(name="all_salesforce_changes")
-def all_changes():
-    return read_stream(
-        "lakeflow_connect",
-        connection="salesforce_pubsub_connection",
-        table_options={"topic": "/data/ChangeEvents"}
-    )
+# Dynamically import and register the LakeFlow source
+register_lakeflow_source = get_register_function(source_name)
+register_lakeflow_source(spark)
 
-# Fan out to object-specific tables using downstream views or tables
-@dlt.table(name="account_changes_derived")
-def account_changes_derived():
-    return dlt.read("all_salesforce_changes").filter(
-        "get_json_object(decoded_event, '$.ChangeEventHeader.entityName') = 'Account'"
-    )
+# Ingest the tables specified in the pipeline spec
+ingest(spark, pipeline_spec)
 ```
 
-### Step 4: Configure and Run the Pipeline
+**Key configuration options:**
 
-1. Create a new Delta Live Tables pipeline in Databricks
-2. Point it to your `ingest.py` file
-3. Ensure the Python dependencies are configured in the Environment tab
-4. Set the pipeline to **Continuous** mode for real-time streaming
-5. Start the pipeline
+| Field | Description |
+|-------|-------------|
+| `connection_name` | Name of your Unity Catalog connection |
+| `source_table` | Logical table name (derived from topic) |
+| `destination_catalog` | Target Unity Catalog catalog |
+| `destination_schema` | Target schema |
+| `destination_table` | Target table name |
+| `topic` | Salesforce Pub/Sub topic path |
+| `replayPreset` | `EARLIEST` (start from oldest) or `LATEST` (newest only) |
+| `scd_type` | Use `APPEND_ONLY` for CDC event streams |
+
+### Step 4: Configure Pipeline Environment
+
+The community connector requires Python packages to be installed in the pipeline environment. In your Databricks pipeline settings:
+
+1. Navigate to the **Environment** tab under serverless compute
+2. Add these packages as dependencies:
+
+```
+grpcio>=1.50.0
+protobuf>=4.21.0
+avro-python3>=1.10.0
+bitstring>=4.0.0
+certifi>=2022.0.0
+requests>=2.28.0
+```
+
+### Step 5: Run the Pipeline
+
+1. Set the pipeline to **Continuous** mode for real-time streaming
+2. Start the pipeline
 
 Events will begin flowing from Salesforce to your Delta tables with sub-5-second latency.
 
